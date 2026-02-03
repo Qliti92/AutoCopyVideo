@@ -101,6 +101,113 @@ dist/
 
 ---
 
+## ▶️ Chạy từ file `.exe` (đã có sẵn)
+
+Dành cho người chỉ được share file `.exe`, không cần cài Python.
+
+---
+
+### Lần đầu chạy
+
+**Bước 1 — Tạo thư mục mới**, đặt `.exe` và `.env` vào cùng 1 chỗ:
+
+```
+📂 VideoCopyTool\
+ ├── VideoCopyTool.exe
+ └── .env
+```
+
+> ⚠️ `.exe` và `.env` **phải cùng thư mục**. Nếu không cùng thì app sẽ báo thiếu biến cấu hình.
+
+---
+
+**Bước 2 — Chỉnh sửa `.env`** bằng bất kỳ editor nào (Notepad, VS Code…):
+
+Chỉ cần đổi 2 đường dẫn quan trọng nhất:
+
+```env
+SOURCE_DIR=C:\đường\dẫn\thư\mục\nguồn
+DEST_DIR=C:\đường\dẫn\thư\mục\đích
+```
+
+Ví dụ thực:
+
+```env
+SOURCE_DIR=D:\Download\Video_mới
+DEST_DIR=E:\Kho_Video
+```
+
+Các biến còn lại giữ mặc định là được, chỉ đổi nếu cần.
+
+---
+
+**Bước 3 — Double-click `VideoCopyTool.exe`** để chạy. Console sẽ hiện ra:
+
+```
+────────────────────────────────────────────────────
+  TOOL COPY VIDEO TỰ ĐỘNG - CHỐNG TRÙNG HASH
+  Author : TRẦN ĐÌNH QUÂN
+  Zalo   : 0375823061
+────────────────────────────────────────────────────
+
+[HH:MM:SS] [INFO ] Log file: …\video_copy.log
+[HH:MM:SS] [INFO ] Cấu hình đã nạp:
+[HH:MM:SS] [INFO ]   Thư mục nguồn   : D:\Download\Video_mới
+[HH:MM:SS] [INFO ]   Thư mục đích    : E:\Kho_Video
+…
+[HH:MM:SS] [INFO ] ═══ Chu kỳ quét #1 ═══
+```
+
+Để đó chạy. Chương trình sẽ tự quét và copy video.
+
+---
+
+**Bước 4 — Dừng chương trình:** nhấn `Ctrl + C`, đợi hiện thông báo, rồi nhấn phím bất kỳ để đóng console.
+
+---
+
+### Chỉnh sửa cấu hình sau khi đã chạy
+
+Không cần reinstall hay rebuild gì cả. Chỉ cần:
+
+1. Dừng chương trình (`Ctrl + C`).
+2. Mở `.env` bằng Notepad → sửa giá trị cần đổi → `Ctrl + S`.
+3. Double-click `.exe` lại.
+
+Chương trình sẽ đọc lại `.env` mới khi khởi động.
+
+---
+
+### Chỉnh sửa từng biến cụ thể
+
+| Muốn làm gì                        | Sửa biến nào         | Ví dụ                                    |
+|--------------------------------------|----------------------|------------------------------------------|
+| Đổi thư mục nguồn                   | `SOURCE_DIR`         | `SOURCE_DIR=D:\Video_inbox`              |
+| Đổi thư mục đích                    | `DEST_DIR`           | `DEST_DIR=E:\Kho_Video`                  |
+| Quét nhanh hơn / chậm hơn          | `SCAN_INTERVAL`      | `SCAN_INTERVAL=5` (5 giây)              |
+| Thêm/bỏ định dạng video           | `VIDEO_EXTENSIONS`   | `VIDEO_EXTENSIONS=.mp4,.mkv,.avi`        |
+| Tắt log ra file                     | `LOG_FILE`           | Xóa giá trị: `LOG_FILE=`                |
+| Reset lịch sử copy                  | —                    | Xóa file `history.json` cạnh `.exe`      |
+
+---
+
+### Các file tự sinh ra khi chạy
+
+Sau lần chạy đầu, thư mục sẽ có thêm:
+
+```
+📂 VideoCopyTool\
+ ├── VideoCopyTool.exe
+ ├── .env
+ ├── history.json          ← lịch sử copy (tự tạo)
+ └── video_copy.log        ← log chi tiết (tự tạo)
+```
+
+- `history.json` — chứa danh sách video đã copy. Xóa file này nếu muốn copy lại từ đầu.
+- `video_copy.log` — log toàn bộ quá trình, hữu ích để debug.
+
+---
+
 ## 📋 Yêu cầu hệ thống
 
 | Thứ gì | Phiên bản |
@@ -121,4 +228,4 @@ dist/
 ## 👤 Tác giả
 
 **TRẦN ĐÌNH QUÂN**
-Zalo: `0375823061`# AutoCopyVideo
+Zalo: `0375823061`
