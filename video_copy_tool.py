@@ -28,35 +28,24 @@ init(autoreset=True, strip=not sys.platform.startswith("win"))
 #  BASE DIR – hoạt động cả .py lẫn .exe (PyInstaller)
 # ════════════════════════════════════════════════════════════════
 def get_base_dir() -> Path:
-    """
-    - Chạy từ .exe (PyInstaller --onefile): trả về thư mục chứa .exe
-    - Chạy từ .py bằng python:            trả về thư mục chứa .py
-    """
     if getattr(sys, "frozen", False):
-        # PyInstaller đóng gói → sys.executable là đường dẫn .exe
         return Path(sys.executable).resolve().parent
     else:
         return Path(__file__).resolve().parent
 
 
 BASE_DIR = get_base_dir()
-
-# ─── Load .env từ BASE_DIR (cạnh .exe hoặc .py) ─────────────────
 load_dotenv(dotenv_path=BASE_DIR / ".env")
 
 
 # ════════════════════════════════════════════════════════════════
 #  LOGGING – console (màu) + file (.log) song song
 # ════════════════════════════════════════════════════════════════
-# File log path – đọc từ .env, fallback về BASE_DIR nếu rỗng
 _LOG_FILE_RAW = os.getenv("LOG_FILE", "").strip()
 LOG_FILE_PATH = Path(_LOG_FILE_RAW) if _LOG_FILE_RAW else BASE_DIR / "video_copy.log"
-
-# Nếu LOG_FILE là relative path → gắn vào BASE_DIR
 if not LOG_FILE_PATH.is_absolute():
     LOG_FILE_PATH = BASE_DIR / LOG_FILE_PATH
 
-# Setup file logger (plain text, không màu)
 _file_logger = logging.getLogger("videocopy")
 _file_logger.setLevel(logging.DEBUG)
 _file_logger.propagate = False
@@ -81,28 +70,23 @@ def _timestamp() -> str:
 
 
 def _log_both(level_tag: str, color: str, msg: str, log_level: int = logging.INFO):
-    """In console có màu + ghi file log cùng lúc."""
     print(f"{color}[{_timestamp()}] [{level_tag}] {msg}{Style.RESET_ALL}")
     _file_logger.log(log_level, msg)
 
 
 def log_info(msg: str):
-    """Cyan – thông tin hệ thống."""
     _log_both("INFO ", Fore.CYAN, msg, logging.INFO)
 
 
 def log_success(msg: str):
-    """Xanh lá – copy thành công."""
     _log_both("OK   ", Fore.GREEN, msg, logging.INFO)
 
 
 def log_warning(msg: str):
-    """Vàng – bỏ qua (trùng nội dung / ghi dở)."""
     _log_both("SKIP ", Fore.YELLOW, msg, logging.WARNING)
 
 
 def log_error(msg: str):
-    """Đỏ – lỗi."""
     _log_both("ERR  ", Fore.RED, msg, logging.ERROR)
 
 
@@ -120,44 +104,95 @@ def print_banner():
 
 
 # ════════════════════════════════════════════════════════════════
-#  PRESS ANY KEY TO EXIT (Windows)
+#  PRESS ANY KEY
 # ════════════════════════════════════════════════════════════════
 def press_any_key_to_exit():
-    """Hiển thị 'Nhấn phím bất kỳ để thoát…' và đợi."""
     print()
     print(f"{Fore.YELLOW}  >>> Nhấn phím bất kỳ để thoát chương trình… <<<{Style.RESET_ALL}")
     try:
-        # Windows: msvcrt có thể đọc 1 phím không cần Enter
         import msvcrt
         msvcrt.getch()
     except ImportError:
-        # Linux / macOS fallback: dùng input()
         input()
 
 
 # ════════════════════════════════════════════════════════════════
-#  CẤU HÌNH – đọc 100% từ .env
+#  PARSE COPY_PAIRS từ .env
+#  Định dạng:  [LABEL] nguồn → đích | [LABEL2] nguồn2 → đích2
+#  Label tùy chọn – nếu bỏ sẽ tự sinh Pair_1, Pair_2 …
+#  Hỗ trợ cả "→" (unicode) và "->" (ASCII)
 # ════════════════════════════════════════════════════════════════
-def load_config() -> dict:
-    """Load và validate toàn bộ config từ .env.
-    Ném SystemExit nếu thiếu biến bắt buộc."""
+def parse_copy_pairs(raw: str) -> list[dict] | None:
+    if not raw or not raw.strip():
+        return None
 
-    required = [
-        "SOURCE_DIR",
-        "DEST_DIR",
-        "SCAN_INTERVAL",
-        "HISTORY_FILE",
-        "VIDEO_EXTENSIONS",
-        "HASH_CHUNK_MB",
-    ]
+    pairs   = []
+    counter = 0
+    segments = raw.split("|")
 
-    missing = [k for k in required if not os.getenv(k)]
+    for seg in segments:
+        seg = seg.strip()
+        if not seg or seg.startswith("#"):
+            continue
+
+        # ── Tách label [LABEL] ──────────────────────────────
+        label = None
+        body  = seg
+        if seg.startswith("["):
+            close = seg.find("]")
+            if close != -1:
+                label = seg[1:close].strip()
+                body  = seg[close + 1:].strip()
+
+        # ── Tách nguồn → đích ───────────────────────────────
+        if "→" in body:
+            parts = body.split("→", maxsplit=1)
+        elif "->" in body:
+            parts = body.split("->", maxsplit=1)
+        else:
+            log_error(f"Pair không hợp lệ (thiếu '→' hoặc '->'): '{seg}'")
+            continue
+
+        src = parts[0].strip()
+        dst = parts[1].strip() if len(parts) > 1 else ""
+
+        if not src or not dst:
+            log_error(f"Pair không hợp lệ (nguồn/đích rỗng): '{seg}'")
+            continue
+
+        counter += 1
+        if not label:
+            label = f"Pair_{counter}"
+
+        pairs.append({
+            "label":  label,
+            "source": Path(src),
+            "dest":   Path(dst),
+        })
+
+    return pairs if pairs else None
+
+
+# ════════════════════════════════════════════════════════════════
+#  LOAD CONFIG từ .env
+# ════════════════════════════════════════════════════════════════
+def load_config() -> dict | None:
+    # ── Biến bắt buộc (trừ COPY_PAIRS – check riêng) ──────────
+    required = ["SCAN_INTERVAL", "VIDEO_EXTENSIONS", "HASH_CHUNK_MB"]
+    missing  = [k for k in required if not os.getenv(k)]
     if missing:
-        log_error(f"Thiếu biến trong file .env: {', '.join(missing)}")
+        log_error(f"Thiếu biến trong .env: {', '.join(missing)}")
         log_error(f"Đường dẫn .env đang tìm: {BASE_DIR / '.env'}")
-        log_error("Vui lòng kiểm tra file .env đặt cạnh chương trình và thử lại.")
-        return None  # báo lỗi, không exit ở đây để press_any_key vẫn chạy
+        return None
 
+    # ── COPY_PAIRS ──────────────────────────────────────────────
+    pairs = parse_copy_pairs(os.getenv("COPY_PAIRS", ""))
+    if not pairs:
+        log_error("COPY_PAIRS rỗng hoặc không có pair hợp lệ.")
+        log_error("Định dạng: COPY_PAIRS=[A1] D:\\src → E:\\dst | [A2] …")
+        return None
+
+    # ── SCAN_INTERVAL ───────────────────────────────────────────
     try:
         scan_interval = int(os.getenv("SCAN_INTERVAL"))
         if scan_interval < 1:
@@ -166,6 +201,17 @@ def load_config() -> dict:
         log_error("SCAN_INTERVAL phải là số nguyên >= 1")
         return None
 
+    # ── VIDEO_EXTENSIONS ────────────────────────────────────────
+    raw_ext = os.getenv("VIDEO_EXTENSIONS", "")
+    extensions = {
+        (e.strip().lower() if e.strip().startswith(".") else f".{e.strip().lower()}")
+        for e in raw_ext.split(",") if e.strip()
+    }
+    if not extensions:
+        log_error("VIDEO_EXTENSIONS rỗng hoặc không hợp lệ")
+        return None
+
+    # ── HASH_CHUNK_MB ───────────────────────────────────────────
     try:
         chunk_mb = float(os.getenv("HASH_CHUNK_MB"))
         if chunk_mb <= 0:
@@ -174,38 +220,34 @@ def load_config() -> dict:
         log_error("HASH_CHUNK_MB phải là số dương")
         return None
 
-    # Parse extension → set {'.mp4', '.avi', …}
-    raw_ext = os.getenv("VIDEO_EXTENSIONS", "")
-    extensions = {
-        (ext.strip().lower() if ext.strip().startswith(".") else f".{ext.strip().lower()}")
-        for ext in raw_ext.split(",") if ext.strip()
-    }
-    if not extensions:
-        log_error("VIDEO_EXTENSIONS rỗng hoặc không hợp lệ")
-        return None
-
-    # HISTORY_FILE: nếu relative → gắn BASE_DIR
-    history_raw = Path(os.getenv("HISTORY_FILE"))
-    history_path = history_raw if history_raw.is_absolute() else BASE_DIR / history_raw
+    # ── HISTORY_FILE (base name – mỗi pair thêm suffix _label) ──
+    history_raw  = os.getenv("HISTORY_FILE", "history.json").strip()
+    history_base = Path(history_raw)
+    if not history_base.is_absolute():
+        history_base = BASE_DIR / history_base
 
     return {
-        "source_dir":    Path(os.getenv("SOURCE_DIR")),
-        "dest_dir":      Path(os.getenv("DEST_DIR")),
+        "pairs":         pairs,
         "scan_interval": scan_interval,
-        "history_file":  history_path,
         "extensions":    extensions,
         "chunk_size":    int(chunk_mb * 1024 * 1024),
+        "history_base":  history_base,
     }
 
 
 # ════════════════════════════════════════════════════════════════
-#  LỊCH SỬ – JSON
+#  HISTORY – 1 file per pair:  history_<label>.json
 # ════════════════════════════════════════════════════════════════
-def load_history(history_path: Path) -> dict:
-    if not history_path.is_file():
+def get_history_path(history_base: Path, label: str) -> Path:
+    """history.json + label 'A1'  →  history_A1.json"""
+    return history_base.parent / f"{history_base.stem}_{label}{history_base.suffix}"
+
+
+def load_history(path: Path) -> dict:
+    if not path.is_file():
         return {}
     try:
-        with open(history_path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
             return data
@@ -213,24 +255,24 @@ def load_history(history_path: Path) -> dict:
             return {item["hash"]: item for item in data if "hash" in item}
         return {}
     except (json.JSONDecodeError, KeyError, TypeError):
-        log_warning("File lịch sử bị hỏng → rebuild từ đầu.")
+        log_warning(f"File lịch sử '{path.name}' bị hỏng → rebuild.")
         return {}
 
 
-def save_history(history_path: Path, history: dict):
+def save_history(path: Path, history: dict):
     try:
-        history_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(history_path, "w", encoding="utf-8") as f:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(history, f, ensure_ascii=False, indent=2)
     except OSError as e:
-        log_error(f"Không thể lưu file lịch sử: {e}")
+        log_error(f"Lưu '{path.name}' thất bại: {e}")
 
 
 # ════════════════════════════════════════════════════════════════
 #  FILE STABILITY
 # ════════════════════════════════════════════════════════════════
-STABILITY_INTERVAL = 1.0   # giây
-STABILITY_CHECKS   = 2     # lần
+STABILITY_INTERVAL = 1.0
+STABILITY_CHECKS   = 2
 
 
 def is_file_stable(filepath: Path) -> bool:
@@ -275,38 +317,44 @@ def scan_videos(source_dir: Path, extensions: set) -> list[Path]:
             if p.is_file() and p.suffix.lower() in extensions
         ]
     except OSError as e:
-        log_error(f"Không thể quét thư mục nguồn: {e}")
+        log_error(f"Không quét được '{source_dir}': {e}")
         return []
 
 
 # ════════════════════════════════════════════════════════════════
 #  XỬ LÝ 1 VIDEO
 # ════════════════════════════════════════════════════════════════
-def process_video(video_path: Path, config: dict, history: dict) -> bool:
-    """Returns True nếu history đã được cập nhật."""
+def process_video(
+    video_path: Path,
+    dest_dir:   Path,
+    chunk_size: int,
+    history:    dict,
+    label:      str,
+) -> bool:
+    """Returns True nếu history đã cập nhật."""
+
     name = video_path.name
+    tag  = f"[{label}]"
 
     try:
         current_size = video_path.stat().st_size
     except OSError as e:
-        log_error(f"Không đọc được '{name}': {e}")
+        log_error(f"{tag} Không đọc được '{name}': {e}")
         return False
 
     # ── Ổn định file ────────────────────────────────────────
     if not is_file_stable(video_path):
-        log_warning(f"'{name}' đang được ghi dở → bỏ qua lần này.")
+        log_warning(f"{tag} '{name}' đang ghi dở → bỏ qua.")
         return False
 
-    # ── Fast-path: so sánh size trước ──────────────────────
-    # Nếu không có record nào trong history có cùng size → file mới chắc chắn
-    # → tính hash 1 lần.  Nếu có size trùng → vẫn cần tính hash để xác minh.
-    size_exists_in_history = any(
-        rec.get("size") == current_size for rec in history.values()
-    )
-    # (Dù size có trùng hay không, đều cần tính hash vì nội dung có thể khác)
+    # ── Fast-path: size chưa có trong history → file mới chắc chắn ──
+    #    Size đã có → vẫn cần tính hash để xác minh nội dung
+    size_set = {rec.get("size") for rec in history.values()}
+    if current_size not in size_set:
+        pass   # chắc chắn mới – tính hash 1 lần bên dưới
 
     # ── Tính hash ───────────────────────────────────────────
-    file_hash = compute_md5(video_path, config["chunk_size"])
+    file_hash = compute_md5(video_path, chunk_size)
     if file_hash is None:
         return False
 
@@ -314,30 +362,28 @@ def process_video(video_path: Path, config: dict, history: dict) -> bool:
     if file_hash in history:
         existing = history[file_hash]
         log_warning(
-            f"'{name}' trùng nội dung với '{existing['filename']}' "
+            f"{tag} '{name}' trùng với '{existing['filename']}' "
             f"(hash: {file_hash[:12]}…) → bỏ qua."
         )
         return False
 
     # ── Copy sang đích ─────────────────────────────────────
-    dest_path = config["dest_dir"] / name
-
-    # Tên đã tồn tại nhưng hash khác → đổi tên _1, _2…
+    dest_path = dest_dir / name
     if dest_path.exists():
         stem, suffix = dest_path.stem, dest_path.suffix
         counter = 1
         while dest_path.exists():
-            dest_path = config["dest_dir"] / f"{stem}_{counter}{suffix}"
+            dest_path = dest_dir / f"{stem}_{counter}{suffix}"
             counter += 1
-        log_info(f"Tên đã tồn tại → đổi thành '{dest_path.name}'")
+        log_info(f"{tag} Tên tồn tại → đổi thành '{dest_path.name}'")
 
     try:
         shutil.copy2(str(video_path), str(dest_path))
     except OSError as e:
-        log_error(f"Copy '{name}' thất bại: {e}")
+        log_error(f"{tag} Copy '{name}' thất bại: {e}")
         return False
 
-    log_success(f"Copy '{name}' → '{dest_path.name}' ({_human_size(current_size)})")
+    log_success(f"{tag} '{name}' → '{dest_path.name}' ({_human_size(current_size)})")
 
     # ── Ghi lịch sử ─────────────────────────────────────────
     history[file_hash] = {
@@ -375,7 +421,6 @@ def _signal_handler(signum, frame):
 def main():
     global _shutdown_flag
 
-    # Bắt Ctrl+C / SIGTERM
     signal.signal(signal.SIGINT, _signal_handler)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _signal_handler)
@@ -383,64 +428,95 @@ def main():
     # ── Banner ──────────────────────────────────────────────
     print_banner()
 
-    # ── Báo log file ────────────────────────────────────────
     if _LOG_FILE_OK:
         log_info(f"Log file: {LOG_FILE_PATH}")
     else:
-        log_warning("Không thể mở file log → chỉ log console.")
+        log_warning("Không mở được file log → chỉ log console.")
 
-    # ── Load config ─────────────────────────────────────────
+    # ── Config ──────────────────────────────────────────────
     config = load_config()
     if config is None:
-        # Lỗi config → dừng nhưng vẫn cho press any key
         return
 
-    # ── Validate thư mục nguồn ──────────────────────────────
-    if not config["source_dir"].is_dir():
-        log_error(f"Thư mục nguồn không tồn tại: {config['source_dir']}")
+    pairs      = config["pairs"]
+    extensions = config["extensions"]
+    chunk_size = config["chunk_size"]
+    interval   = config["scan_interval"]
+
+    # ── Validate + init history cho từng pair ───────────────
+    histories  = {}          # { label: dict }
+    hist_paths = {}          # { label: Path }
+    valid_pairs = []
+
+    log_info(f"Tổng pair đọc được: {len(pairs)}\n")
+
+    for pair in pairs:
+        label  = pair["label"]
+        source = pair["source"]
+        dest   = pair["dest"]
+
+        if not source.is_dir():
+            log_error(f"[{label}] Nguồn không tồn tại: {source} → BỏQUA.")
+            continue
+
+        dest.mkdir(parents=True, exist_ok=True)
+
+        h_path = get_history_path(config["history_base"], label)
+        hist_paths[label] = h_path
+        histories[label]  = load_history(h_path)
+        valid_pairs.append(pair)
+
+        log_info(f"[{label}] {source}")
+        log_info(f"         → {dest}")
+        log_info(f"         Lịch sử: {h_path.name} ({len(histories[label])} record)\n")
+
+    if not valid_pairs:
+        log_error("Không có pair hợp lệ nào. Kiểm tra COPY_PAIRS trong .env.")
         return
 
-    # Tạo thư mục đích nếu chưa có
-    config["dest_dir"].mkdir(parents=True, exist_ok=True)
-
-    # ── In cấu hình ─────────────────────────────────────────
-    log_info("Cấu hình đã nạp:")
-    log_info(f"  Thư mục nguồn   : {config['source_dir']}")
-    log_info(f"  Thư mục đích    : {config['dest_dir']}")
-    log_info(f"  Chu kỳ quét     : {config['scan_interval']}s")
-    log_info(f"  File lịch sử    : {config['history_file']}")
-    log_info(f"  Extensions      : {', '.join(sorted(config['extensions']))}")
-    log_info(f"  Chunk hash      : {_human_size(config['chunk_size'])}")
+    log_info(f"Extensions : {', '.join(sorted(extensions))}")
+    log_info(f"Chunk hash : {_human_size(chunk_size)}")
+    log_info(f"Chu kỳ quét: {interval}s")
     log_info("Nhấn Ctrl+C để dừng.\n")
-
-    # ── Load history ────────────────────────────────────────
-    history = load_history(config["history_file"])
-    log_info(f"Đã load {len(history)} record lịch sử.\n")
 
     # ── Main loop ───────────────────────────────────────────
     cycle = 0
     while not _shutdown_flag:
         cycle += 1
-        log_info(f"═══ Chu kỳ quét #{cycle} ═══")
 
-        videos = scan_videos(config["source_dir"], config["extensions"])
-        log_info(f"Tìm thấy {len(videos)} file video.")
+        print(f"{Fore.CYAN}{'═' * 54}{Style.RESET_ALL}")
+        log_info(f"  Chu kỳ quét #{cycle}  |  {len(valid_pairs)} pair")
+        print(f"{Fore.CYAN}{'═' * 54}\n{Style.RESET_ALL}")
 
-        history_dirty = False
-        for vid in videos:
+        for pair in valid_pairs:
             if _shutdown_flag:
                 break
-            if process_video(vid, config, history):
-                history_dirty = True
 
-        if history_dirty:
-            save_history(config["history_file"], history)
-            log_info("Đã lưu lịch sử.")
+            label   = pair["label"]
+            source  = pair["source"]
+            dest    = pair["dest"]
+            history = histories[label]
 
-        log_info(f"Chờ {config['scan_interval']}s cho chu kỳ tiếp theo…\n")
+            log_info(f"[{label}] Quét: {source}")
+            videos = scan_videos(source, extensions)
+            log_info(f"[{label}] Tìm thấy {len(videos)} video.")
 
-        # Sleep có thể interrupt bởi Ctrl+C
-        deadline = time.time() + config["scan_interval"]
+            dirty = False
+            for vid in videos:
+                if _shutdown_flag:
+                    break
+                if process_video(vid, dest, chunk_size, history, label):
+                    dirty = True
+
+            if dirty:
+                save_history(hist_paths[label], history)
+                log_info(f"[{label}] Đã lưu lịch sử.")
+
+            print()   # spacing giữa pair
+
+        # ── Chờ ─────────────────────────────────────────────
+        log_info(f"Chờ {interval}s cho chu kỳ tiếp theo…\n")
+        deadline = time.time() + interval
         while time.time() < deadline and not _shutdown_flag:
             time.sleep(0.25)
 
@@ -450,14 +526,13 @@ def main():
 
 
 # ════════════════════════════════════════════════════════════════
-#  ENTRY POINT – wrap try/except → luôn press any key cuối cùng
+#  ENTRY POINT
 # ════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        # Unexpected crash → vẫn log được
-        log_error(f"Lỗi không lường đoán được: {e}")
-        _file_logger.exception("Lỗi không lường đoán được")
+        log_error(f"Lỗi không lường đoán: {e}")
+        _file_logger.exception("Lỗi không lường đoán")
     finally:
         press_any_key_to_exit()
